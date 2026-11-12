@@ -294,6 +294,23 @@ Large repositories with multiple components may need different
 security rules for different paths. Use `exclude-rules` to
 suppress specific rules for specific paths.
 
+Path-based exclusions are auditable external suppressions, just
+like `-exclude` and `#nosec` directives:
+
+- Patterns are matched against file paths relative to the scan
+  roots, so an anchored pattern such as `^cmd/` also matches files
+  reported with absolute paths. Backslashes (`\`) are normalized to
+  forward slashes, making the patterns portable across operating
+  systems.
+- Suppressed findings are hidden by default and are not counted in
+  the `found` statistics.
+- With `-show-ignored`, suppressed findings are displayed (flagged
+  as `NoSec`) without changing the exit code or the `found` count.
+- With `-track-suppressions`, suppressed findings are kept in the
+  JSON and SARIF reports. Each suppression records its `kind`
+  (`external`), the configured path pattern, the matched rule ID
+  (`*` for wildcard entries) and a human-readable justification.
+
 **Configuration File:**
 ```json
 {
@@ -324,7 +341,7 @@ gosec --exclude-rules="cmd/.*:G204,G304;test/.*:G101" ./...
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `path` | string (regex) | Regex matched against file paths |
+| `path` | string (regex) | Regex matched against root-relative file paths (backslashes normalized) |
 | `rules` | []string | Rule IDs to exclude. `*` for all |
 
 #### Rule Configuration

@@ -141,5 +141,50 @@ var _ = Describe("JSON Writer", func() {
 			Expect(details).To(ContainSubstring("Quote: \""))
 			Expect(details).To(ContainSubstring("Backslash: \\"))
 		})
+		It("should include path-based external suppression details", func() {
+			data := &gosec.ReportInfo{
+				Errors: map[string][]gosec.Error{},
+				Issues: []*issue.Issue{
+					{
+						File:       "/home/src/project/cmd/main.go",
+						Line:       "1",
+						Col:        "5",
+						RuleID:     "G304",
+						What:       "File inclusion via variable",
+						Confidence: issue.High,
+						Severity:   issue.Medium,
+						Code:       "os.Open(name)",
+						Cwe:        issue.GetCweByRule("G304"),
+						Suppressions: []issue.SuppressionInfo{
+							{
+								Kind:          "external",
+								Justification: `Suppressed by exclude-rules: path "^cmd/", rule "G304".`,
+								Path:          "^cmd/",
+								Rule:          "G304",
+							},
+						},
+					},
+				},
+				Stats: &gosec.Metrics{},
+			}
+
+			buf := new(bytes.Buffer)
+			err := jsonreport.WriteReport(buf, data)
+			Expect(err).ShouldNot(HaveOccurred())
+
+			var result map[string]interface{}
+			err = json.Unmarshal(buf.Bytes(), &result)
+			Expect(err).ShouldNot(HaveOccurred())
+
+			issues := result["Issues"].([]interface{})
+			firstIssue := issues[0].(map[string]interface{})
+			suppressions := firstIssue["suppressions"].([]interface{})
+			Expect(suppressions).To(HaveLen(1))
+			suppression := suppressions[0].(map[string]interface{})
+			Expect(suppression["kind"]).To(Equal("external"))
+			Expect(suppression["path"]).To(Equal("^cmd/"))
+			Expect(suppression["rule"]).To(Equal("G304"))
+			Expect(suppression["justification"]).NotTo(BeEmpty())
+		})
 	})
 })

@@ -400,3 +400,160 @@ func TestShouldExclude(t *testing.T) {
 		})
 	}
 }
+
+func TestMatchRecordsAuditInfo(t *testing.T) {
+	t.Parallel()
+
+	filter, err := gosec.NewPathExclusionFilter([]gosec.PathExcludeRule{
+		{Path: `^cmd/`, Rules: []string{"G304"}},
+		{Path: `scripts/.*`, Rules: []string{"*"}},
+	})
+	if err != nil {
+		t.Fatalf("NewPathExclusionFilter() error = %v", err)
+	}
+
+	suppression, matched := filter.Match("cmd/main.go", "G304")
+	if !matched {
+		t.Fatal("expected cmd/main.go G304 to be matched")
+	}
+	if suppression.Kind != "external" {
+		t.Errorf("Kind = %q, want external", suppression.Kind)
+	}
+	if suppression.Path != "^cmd/" || suppression.Rule != "G304" {
+		t.Errorf("Match() = (path=%q rule=%q), want (^cmd/ G304)", suppression.Path, suppression.Rule)
+	}
+	if suppression.Justification == "" {
+		t.Error("expected a non-empty justification")
+	}
+
+	wildcardSuppression, matched := filter.Match("scripts/build.go", "G101")
+	if !matched {
+		t.Fatal("expected scripts/build.go G101 to be matched by wildcard rule")
+	}
+	if wildcardSuppression.Path != "scripts/.*" || wildcardSuppression.Rule != "*" {
+		t.Errorf("Match() = (path=%q rule=%q), want (scripts/.* *)",
+			wildcardSuppression.Path, wildcardSuppression.Rule)
+	}
+
+	if _, matched := filter.Match("cmd/main.go", "G101"); matched {
+		t.Error("did not expect G101 in cmd/ to be matched")
+	}
+
+	var nilFilter *gosec.PathExclusionFilter
+	if _, matched := nilFilter.Match("cmd/main.go", "G304"); matched {
+		t.Error("nil filter must never match")
+	}
+}
+
+func TestRootRelativeMatching(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		rules    []gosec.PathExcludeRule
+		roots    []string
+		filePath string
+		ruleID   string
+		want     bool
+	}{
+		{
+			name: "anchored pattern matches absolute path under root",
+			rules: []gosec.PathExcludeRule{
+				{Path: `^cmd/`, Rules: []string{"G304"}},
+			},
+			roots:    []string{"/home/user/project"},
+			filePath: "/home/user/project/cmd/main.go",
+			ruleID:   "G304",
+			want:     true,
+		},
+		{
+			name: "anchored pattern does not match the same directory deeper in the tree",
+			rules: []gosec.PathExcludeRule{
+				{Path: `^cmd/`, Rules: []string{"G304"}},
+			},
+			roots:    []string{"/home/user/project"},
+			filePath: "/home/user/project/pkg/cmd/main.go",
+			ruleID:   "G304",
+			want:     false,
+		},
+		{
+			name: "pattern matches within each of multiple scan roots",
+			rules: []gosec.PathExcludeRule{
+				{Path: `^cmd/`, Rules: []string{"G304"}},
+			},
+			roots: []string{
+				"/home/user/project/moduleA",
+				"/home/user/project/moduleB",
+			},
+			filePath: "/home/user/project/moduleA/cmd/main.go",
+			ruleID:   "G304",
+			want:     true,
+		},
+		{
+			name: "second scan root is also matched relatively",
+			rules: []gosec.PathExcludeRule{
+				{Path: `^cmd/`, Rules: []string{"G304"}},
+			},
+			roots: []string{
+				"/home/user/project/moduleA",
+				"/home/user/project/moduleB",
+			},
+			filePath: "/home/user/project/moduleB/cmd/main.go",
+			ruleID:   "G304",
+			want:     true,
+		},
+		{
+			name: "file outside roots falls back to full normalized path",
+			rules: []gosec.PathExcludeRule{
+				{Path: `/other/cmd/.*`, Rules: []string{"G304"}},
+			},
+			roots:    []string{"/home/user/project"},
+			filePath: "/other/cmd/main.go",
+			ruleID:   "G304",
+			want:     true,
+		},
+		{
+			name: "backslash absolute path is normalized and matched relatively",
+			rules: []gosec.PathExcludeRule{
+				{Path: `^cmd/`, Rules: []string{"G304"}},
+			},
+			roots:    []string{`C:\work\project`},
+			filePath: `C:\work\project\cmd\main.go`,
+			ruleID:   "G304",
+			want:     true,
+		},
+		{
+			name: "backslash relative path is normalized and matched",
+			rules: []gosec.PathExcludeRule{
+				{Path: `^cmd/`, Rules: []string{"G304"}},
+			},
+			filePath: `cmd\main.go`,
+			ruleID:   "G304",
+			want:     true,
+		},
+		{
+			name: "no roots configured keeps matching the full path",
+			rules: []gosec.PathExcludeRule{
+				{Path: `.*cmd/.*`, Rules: []string{"G304"}},
+			},
+			filePath: "/home/user/project/cmd/main.go",
+			ruleID:   "G304",
+			want:     true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			filter, err := gosec.NewPathExclusionFilter(tt.rules)
+			if err != nil {
+				t.Fatalf("NewPathExclusionFilter() error = %v", err)
+			}
+			filter.SetRoots(tt.roots...)
+
+			if got := filter.ShouldExclude(tt.filePath, tt.ruleID); got != tt.want {
+				t.Errorf("ShouldExclude(%q, %q) = %v, want %v",
+					tt.filePath, tt.ruleID, got, tt.want)
+			}
+		})
+	}
+}

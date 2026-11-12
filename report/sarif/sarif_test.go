@@ -202,6 +202,71 @@ var _ = Describe("Sarif Formatter", func() {
 			Expect(err).ShouldNot(HaveOccurred())
 			Expect(validateSarifSchema(sarifReport)).To(Succeed())
 		})
+		It("sarif formatted report should record exclude-rules path and rule in suppression properties", func() {
+			ruleID := "G304"
+			cwe := issue.GetCweByRule(ruleID)
+			pathSuppressedIssue := issue.Issue{
+				File:       "/home/src/project/cmd/main.go",
+				Line:       "1",
+				Col:        "1",
+				RuleID:     ruleID,
+				What:       "test",
+				Confidence: issue.High,
+				Severity:   issue.High,
+				Code:       "1: testcode",
+				Cwe:        cwe,
+				Suppressions: []issue.SuppressionInfo{
+					{
+						Kind:          "external",
+						Justification: `Suppressed by exclude-rules: path "^cmd/", rule "G304".`,
+						Path:          "^cmd/",
+						Rule:          "G304",
+					},
+				},
+			}
+
+			reportInfo := gosec.NewReportInfo([]*issue.Issue{&pathSuppressedIssue}, &gosec.Metrics{}, map[string][]gosec.Error{}).WithVersion("v2.7.0")
+			sarifReport, err := sarif.GenerateReport([]string{"/home/src/project"}, reportInfo)
+			Expect(err).ShouldNot(HaveOccurred())
+			Expect(validateSarifSchema(sarifReport)).To(Succeed())
+
+			suppressions := sarifReport.Runs[0].Results[0].Suppressions
+			Expect(suppressions).To(HaveLen(1))
+			Expect(suppressions[0].Kind).To(Equal("external"))
+			Expect(suppressions[0].Properties).NotTo(BeNil())
+			Expect((*suppressions[0].Properties)["path"]).To(Equal("^cmd/"))
+			Expect((*suppressions[0].Properties)["rule"]).To(Equal("G304"))
+		})
+		It("sarif formatted report should omit suppression properties for in-source suppressions", func() {
+			ruleID := "G101"
+			cwe := issue.GetCweByRule(ruleID)
+			suppressedIssue := issue.Issue{
+				File:       "/home/src/project/test.go",
+				Line:       "1",
+				Col:        "1",
+				RuleID:     ruleID,
+				What:       "test",
+				Confidence: issue.High,
+				Severity:   issue.High,
+				Code:       "1: testcode",
+				Cwe:        cwe,
+				Suppressions: []issue.SuppressionInfo{
+					{
+						Kind:          "inSource",
+						Justification: "justification",
+					},
+				},
+			}
+
+			reportInfo := gosec.NewReportInfo([]*issue.Issue{&suppressedIssue}, &gosec.Metrics{}, map[string][]gosec.Error{}).WithVersion("v2.7.0")
+			sarifReport, err := sarif.GenerateReport([]string{}, reportInfo)
+			Expect(err).ShouldNot(HaveOccurred())
+			Expect(validateSarifSchema(sarifReport)).To(Succeed())
+
+			suppressions := sarifReport.Runs[0].Results[0].Suppressions
+			Expect(suppressions).To(HaveLen(1))
+			Expect(suppressions[0].Properties).To(BeNil())
+		})
 		It("sarif formatted report should contain the formatted one line code snippet", func() {
 			ruleID := "G101"
 			cwe := issue.GetCweByRule(ruleID)

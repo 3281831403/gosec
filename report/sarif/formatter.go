@@ -262,7 +262,20 @@ func getSarifLevel(s string) Level {
 func buildSarifSuppressions(suppressions []issue.SuppressionInfo) []*Suppression {
 	var sarifSuppressionList []*Suppression
 	for _, s := range suppressions {
-		sarifSuppressionList = append(sarifSuppressionList, NewSuppression(s.Kind, s.Justification))
+		suppression := NewSuppression(s.Kind, s.Justification)
+		// Record the exclude-rules entry that produced the external
+		// suppression so SARIF consumers can audit the path pattern and the
+		// rule ID it applied to.
+		if s.Path != "" || s.Rule != "" {
+			suppression.Properties = &PropertyBag{}
+			if s.Path != "" {
+				(*suppression.Properties)["path"] = s.Path
+			}
+			if s.Rule != "" {
+				(*suppression.Properties)["rule"] = s.Rule
+			}
+		}
+		sarifSuppressionList = append(sarifSuppressionList, suppression)
 	}
 	return sarifSuppressionList
 }

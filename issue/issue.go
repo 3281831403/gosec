@@ -141,6 +141,13 @@ type Issue struct {
 type SuppressionInfo struct {
 	Kind          string `json:"kind"`
 	Justification string `json:"justification"`
+	// Path is the path pattern of the exclude-rules entry that suppressed the
+	// finding. It is only populated for external path-based suppressions.
+	Path string `json:"path,omitempty"`
+	// Rule is the rule ID targeted by the exclude-rules entry that suppressed
+	// the finding ("*" when the entry suppressed every rule). It is only
+	// populated for external path-based suppressions.
+	Rule string `json:"rule,omitempty"`
 }
 
 // FileLocation point out the file path and line number in file

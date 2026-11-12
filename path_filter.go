@@ -2,6 +2,7 @@ package gosec
 
 import (
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -25,6 +26,10 @@ type compiledPathRule struct {
 // PathExclusionFilter handles filtering of issues based on path and rule combinations
 type PathExclusionFilter struct {
 	rules []compiledPathRule
+	// roots are the absolute scan roots against which file paths are made
+	// relative before matching. Empty when no root was configured, in which
+	// case the normalized path is matched as-is.
+	roots []string
 }
 
 // NewPathExclusionFilter creates a new filter from the provided exclusion rules.
@@ -69,28 +74,88 @@ func NewPathExclusionFilter(rules []PathExcludeRule) (*PathExclusionFilter, erro
 	return &PathExclusionFilter{rules: compiled}, nil
 }
 
-// ShouldExclude returns true if the given issue should be excluded based on
-// its file path and rule ID
-func (f *PathExclusionFilter) ShouldExclude(filePath, ruleID string) bool {
+// SetRoots records the absolute scan roots used to turn issue file paths into
+// root-relative paths before matching the configured path regexes. This makes
+// patterns anchored at the start (e.g. "^cmd/") match even though the scanner
+// reports absolute file paths. Paths that are not contained in any root are
+// matched against their normalized full path.
+func (f *PathExclusionFilter) SetRoots(roots ...string) {
+	if f == nil {
+		return
+	}
+	cleaned := make([]string, 0, len(roots))
+	for _, root := range roots {
+		if root == "" {
+			continue
+		}
+		cleaned = append(cleaned, strings.ReplaceAll(filepath.Clean(root), "\\", "/"))
+	}
+	f.roots = cleaned
+}
+
+// normalizePath converts the file path to a forward-slash form and, when scan
+// roots are configured, returns the longest root-relative path so that
+// repository-relative regexes match regardless of where the checkout lives.
+func (f *PathExclusionFilter) normalizePath(filePath string) string {
+	normalizedPath := strings.ReplaceAll(filepath.Clean(filePath), "\\", "/")
+	longest := -1
+	relative := normalizedPath
+	for _, root := range f.roots {
+		if len(root) > longest && strings.HasPrefix(normalizedPath, root+"/") {
+			longest = len(root)
+			relative = normalizedPath[len(root)+1:]
+		}
+	}
+	return relative
+}
+
+// Match returns the suppression information when the file path and rule ID
+// match one of the configured exclusion rules, and true to signal the issue
+// must be suppressed. The returned SuppressionInfo records the configured path
+// pattern and rule ID (or "*") for auditing.
+func (f *PathExclusionFilter) Match(filePath, ruleID string) (issue.SuppressionInfo, bool) {
 	if f == nil || len(f.rules) == 0 {
-		return false
+		return issue.SuppressionInfo{}, false
 	}
 
-	// Normalize path separators for consistent matching
-	normalizedPath := strings.ReplaceAll(filePath, "\\", "/")
+	normalizedPath := f.normalizePath(filePath)
 
 	for _, rule := range f.rules {
-		if rule.pathRegex.MatchString(normalizedPath) {
-			if rule.excludeAll {
-				return true
-			}
-			if rule.ruleSet[ruleID] {
-				return true
-			}
+		if !rule.pathRegex.MatchString(normalizedPath) {
+			continue
+		}
+		if rule.excludeAll {
+			return issue.SuppressionInfo{
+				Kind:          "external",
+				Justification: pathSuppressionJustification(rule.original.Path, aliasOfAllRules),
+				Path:          rule.original.Path,
+				Rule:          aliasOfAllRules,
+			}, true
+		}
+		if rule.ruleSet[ruleID] {
+			return issue.SuppressionInfo{
+				Kind:          "external",
+				Justification: pathSuppressionJustification(rule.original.Path, ruleID),
+				Path:          rule.original.Path,
+				Rule:          ruleID,
+			}, true
 		}
 	}
 
-	return false
+	return issue.SuppressionInfo{}, false
+}
+
+// pathSuppressionJustification builds a human-readable justification stating
+// which exclude-rules entry suppressed the finding.
+func pathSuppressionJustification(pathPattern, ruleID string) string {
+	return fmt.Sprintf("Suppressed by exclude-rules: path %q, rule %q.", pathPattern, ruleID)
+}
+
+// ShouldExclude returns true if the given issue should be excluded based on
+// its file path and rule ID
+func (f *PathExclusionFilter) ShouldExclude(filePath, ruleID string) bool {
+	_, excluded := f.Match(filePath, ruleID)
+	return excluded
 }
 
 // FilterIssues applies path-based exclusions to a slice of issues.
@@ -104,7 +169,7 @@ func (f *PathExclusionFilter) FilterIssues(issues []*issue.Issue) ([]*issue.Issu
 	excluded := 0
 
 	for _, iss := range issues {
-		if f.ShouldExclude(iss.File, iss.RuleID) {
+		if _, match := f.Match(iss.File, iss.RuleID); match {
 			excluded++
 			continue
 		}

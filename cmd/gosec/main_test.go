@@ -413,6 +413,29 @@ var _ = Describe("filterIssues", func() {
 			Expect(filtered).To(HaveLen(2))
 			Expect(trueIssues).To(Equal(2))
 		})
+
+		It("should not count nosec issues when showing ignored", func() {
+			*flagShowIgnored = true
+			issuesWithNoSec := []*issue.Issue{
+				{
+					Severity:   issue.High,
+					Confidence: issue.High,
+					NoSec:      true,
+					What:       "NoSec issue shown but suppressed",
+				},
+				{
+					Severity:   issue.High,
+					Confidence: issue.High,
+					NoSec:      false,
+					What:       "Regular issue",
+				},
+			}
+			filtered, trueIssues := filterIssues(issuesWithNoSec, issue.Low, issue.Low)
+			// -show-ignored only displays suppressed findings; it must not inflate
+			// the active finding count.
+			Expect(filtered).To(HaveLen(2))
+			Expect(trueIssues).To(Equal(1))
+		})
 	})
 
 	Context("with suppressions", func() {
@@ -483,6 +506,23 @@ var _ = Describe("computeExitCode", func() {
 				Suppressions: []issue.SuppressionInfo{{Kind: "inSource"}},
 			},
 		}
+		exitCode := computeExitCode(issues, map[string][]gosec.Error{}, false)
+		Expect(exitCode).To(Equal(exitSuccess))
+	})
+
+	It("should succeed when only shown-but-ignored nosec issues remain", func() {
+		originalShowIgnored := *flagShowIgnored
+		*flagShowIgnored = true
+		DeferCleanup(func() { *flagShowIgnored = originalShowIgnored })
+
+		issues := []*issue.Issue{
+			{
+				Severity:   issue.High,
+				Confidence: issue.High,
+				NoSec:      true,
+			},
+		}
+		// -show-ignored must not turn displayed #nosec findings into a failure.
 		exitCode := computeExitCode(issues, map[string][]gosec.Error{}, false)
 		Expect(exitCode).To(Equal(exitSuccess))
 	})

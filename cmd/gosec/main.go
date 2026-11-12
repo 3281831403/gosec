@@ -361,7 +361,7 @@ func filterIssues(issues []*issue.Issue, severity issue.Score, confidence issue.
 	for _, issue := range issues {
 		if issue.Severity >= severity && issue.Confidence >= confidence {
 			result = append(result, issue)
-			if (!issue.NoSec || !*flagShowIgnored) && len(issue.Suppressions) == 0 {
+			if !isSuppressed(issue) {
 				trueIssues++
 			}
 		}
@@ -369,11 +369,19 @@ func filterIssues(issues []*issue.Issue, severity issue.Score, confidence issue.
 	return result, trueIssues
 }
 
+// isSuppressed reports whether the issue was suppressed, either by an in-source
+// #nosec directive shown through -show-ignored or by a tracked suppression
+// (in-source or external). Issues only kept visible because -show-ignored is
+// enabled must never count as active findings or drive a non-zero exit code.
+func isSuppressed(issue *issue.Issue) bool {
+	return len(issue.Suppressions) > 0 || (issue.NoSec && *flagShowIgnored)
+}
+
 // computeExitCode determines the exit code based on issues found and noFail flag.
 func computeExitCode(issues []*issue.Issue, errors map[string][]gosec.Error, noFail bool) int {
 	nsi := 0
 	for _, issue := range issues {
-		if len(issue.Suppressions) == 0 {
+		if !isSuppressed(issue) {
 			nsi++
 		}
 	}
@@ -517,10 +525,23 @@ func run() int {
 		return exitFailure
 	}
 
+	// Compute the scan roots up front so exclude-rules patterns are matched
+	// against repository-relative paths even when the scanner reports
+	// absolute file paths.
+	rootPaths, err := getRootPaths(flag.Args())
+	if err != nil {
+		logger.Printf("Failed to get root paths: %v", err)
+		return exitFailure
+	}
+	pathFilter.SetRoots(rootPaths...)
+
 	// Create the analyzer
 	analyzer := gosec.NewAnalyzer(config, *flagScanTests, *flagExcludeGenerated, *flagTrackSuppressions, *flagConcurrency, logger)
 	analyzer.LoadRules(ruleList.RulesInfo())
 	analyzer.LoadAnalyzers(analyzerList.AnalyzersInfo())
+	// Path-based exclusions are applied as auditable external suppressions
+	// inside the analyzer instead of being silently dropped afterwards.
+	analyzer.SetPathExclusionFilter(pathFilter)
 
 	excludedDirs := gosec.ExcludedDirsRegExp(flagDirsExclude)
 	var packages []string
@@ -553,15 +574,10 @@ func run() int {
 		return exitFailure
 	}
 
-	// Collect the results
+	// Collect the results. Path-based exclude-rules have already been applied
+	// inside the analyzer as external suppressions, so they are hidden by
+	// default, shown with -show-ignored and recorded when tracking is enabled.
 	issues, metrics, errors := analyzer.Report()
-
-	// Apply path-based exclusions first
-	var pathExcludedCount int
-	issues, pathExcludedCount = pathFilter.FilterIssues(issues)
-	if pathExcludedCount > 0 {
-		logger.Printf("Excluded %d issues by path-based rules", pathExcludedCount)
-	}
 
 	// Sort the issue by severity
 	if *flagSortIssues {
@@ -578,13 +594,6 @@ func run() int {
 	// Exit quietly if nothing was found
 	if len(issues) == 0 && *flagQuiet {
 		return exitSuccess
-	}
-
-	// Create output report
-	rootPaths, err := getRootPaths(flag.Args())
-	if err != nil {
-		logger.Printf("Failed to get root paths: %v", err)
-		return exitFailure
 	}
 
 	reportInfo := gosec.NewReportInfo(issues, metrics, errors).WithVersion(Version)

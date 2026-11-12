@@ -201,6 +201,10 @@ type Analyzer struct {
 	trackSuppressions bool
 	concurrency       int
 	analyzerSet       *analyzers.AnalyzerSet
+	// pathFilter holds the path-based exclude-rules. When set, matching
+	// findings are recorded as external suppressions instead of being dropped
+	// without an audit trail.
+	pathFilter *PathExclusionFilter
 }
 
 // NewAnalyzer builds a new analyzer.
@@ -280,6 +284,14 @@ func (gosec *Analyzer) LoadAnalyzers(analyzerDefinitions map[string]analyzers.An
 		r := def.Create(def.ID, def.Description)
 		gosec.analyzerSet.Register(r, analyzerSuppressed[id])
 	}
+}
+
+// SetPathExclusionFilter registers the path-based exclusion filter. Findings
+// matched by the filter are treated as external suppressions: hidden by
+// default, displayed with -show-ignored, and recorded with their path pattern
+// and rule ID when -track-suppressions is enabled.
+func (gosec *Analyzer) SetPathExclusionFilter(filter *PathExclusionFilter) {
+	gosec.pathFilter = filter
 }
 
 // Process kicks off the analysis process for a given package
@@ -1076,11 +1088,15 @@ func (v *astVisitor) reportInvalidDirective(group *ast.CommentGroup, reason stri
 // updateIssues updates the issues list with the given issue, handling suppressions.
 func (gosec *Analyzer) updateIssues(issue *issue.Issue, issues []*issue.Issue, stats *Metrics, allIgnores ignores) []*issue.Issue {
 	if issue != nil {
-		suppressions, ignored := getSuppressions(allIgnores, issue.File, issue.Line, issue.RuleID, gosec.ruleset, gosec.analyzerSet)
+		suppressions, ignored := getSuppressions(allIgnores, issue.File, issue.Line, issue.RuleID, gosec.ruleset, gosec.analyzerSet, gosec.pathFilter)
 		if gosec.showIgnored {
 			issue.NoSec = ignored
 		}
-		if !ignored || !gosec.showIgnored {
+		// Suppressed findings (in-source #nosec, globally excluded rules or
+		// path-based exclude-rules) are never counted as active findings,
+		// regardless of whether they are displayed via -show-ignored or
+		// recorded through -track-suppressions.
+		if !ignored {
 			stats.NumFound++
 		}
 		if ignored && gosec.trackSuppressions {
@@ -1094,7 +1110,7 @@ func (gosec *Analyzer) updateIssues(issue *issue.Issue, issues []*issue.Issue, s
 }
 
 // getSuppressions returns the suppressions for a given issue location and rule ID.
-func getSuppressions(ignores ignores, file, line, ruleID string, ruleset RuleSet, analyzerSet *analyzers.AnalyzerSet) ([]issue.SuppressionInfo, bool) {
+func getSuppressions(ignores ignores, file, line, ruleID string, ruleset RuleSet, analyzerSet *analyzers.AnalyzerSet, pathFilter *PathExclusionFilter) ([]issue.SuppressionInfo, bool) {
 	ignoredRules := ignores.get(file, line)
 	generalSuppressions, generalIgnored := ignoredRules[aliasOfAllRules]
 	ruleSuppressions, ruleIgnored := ignoredRules[ruleID]
@@ -1108,6 +1124,12 @@ func getSuppressions(ignores ignores, file, line, ruleID string, ruleset RuleSet
 			Kind:          "external",
 			Justification: externalSuppressionJustification,
 		})
+	}
+
+	// Track external suppressions coming from path-based exclude-rules.
+	if pathSuppression, pathIgnored := pathFilter.Match(file, ruleID); pathIgnored {
+		ignored = true
+		suppressions = append(suppressions, pathSuppression)
 	}
 	return suppressions, ignored
 }
@@ -1126,4 +1148,5 @@ func (gosec *Analyzer) Reset() {
 	gosec.ruleBuilders = nil
 	gosec.ruleSuppressed = nil
 	gosec.analyzerSet = analyzers.NewAnalyzerSet()
+	gosec.pathFilter = nil
 }
